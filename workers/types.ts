@@ -5,4 +5,7 @@
 export interface Env extends Cloudflare.Env {
 	POLICY_AUD: string;
 	TEAM_DOMAIN: string;
+	VAPID_PUBLIC_KEY: Cloudflare.Env["VAPID_PUBLIC_KEY"];
+	VAPID_PRIVATE_KEY?: string;
+	VAPID_SUBJECT: Cloudflare.Env["VAPID_SUBJECT"];
 }

@@ -81,8 +81,11 @@ function put<T>(url: string, body?: unknown) {
 	});
 }
 
-function del<T>(url: string) {
-	return request<T>(url, { method: "DELETE" });
+function del<T>(url: string, body?: unknown) {
+	return request<T>(url, {
+		method: "DELETE",
+		body: body != null ? JSON.stringify(body) : undefined,
+	});
 }
 
 // ---------- Typed response shapes ----------
@@ -92,12 +95,27 @@ interface EmailListResponse {
 	totalCount: number;
 }
 
+interface PushConfigResponse {
+	enabled: boolean;
+	publicKey: string | null;
+}
+
+type PushSubscriptionPayload = {
+	endpoint?: string;
+	expirationTime?: number | null;
+	keys?: {
+		p256dh?: string;
+		auth?: string;
+	};
+};
+
 // ---------- API client ----------
 
 const api = {
 	// Config
 	getConfig: () =>
 		get<{ domains: string[]; emailAddresses: string[] }>("/api/v1/config"),
+	getPushConfig: () => get<PushConfigResponse>("/api/v1/push/config"),
 
 	// Mailboxes
 	listMailboxes: () => get<Mailbox[]>("/api/v1/mailboxes"),
@@ -109,6 +127,12 @@ const api = {
 		put<Mailbox>(`/api/v1/mailboxes/${mailboxId}`, { settings }),
 	deleteMailbox: (mailboxId: string) =>
 		del<void>(`/api/v1/mailboxes/${mailboxId}`),
+	subscribePush: (mailboxId: string, subscription: PushSubscriptionPayload) =>
+		post<{ status: string }>(`/api/v1/mailboxes/${mailboxId}/push-subscriptions`, { subscription }),
+	unsubscribePush: (mailboxId: string, endpoint: string) =>
+		del<{ status: string }>(`/api/v1/mailboxes/${mailboxId}/push-subscriptions`, { endpoint }),
+	sendTestPush: (mailboxId: string) =>
+		post<{ status: string }>(`/api/v1/mailboxes/${mailboxId}/push-test`),
 
 	// Emails
 	listEmails: (mailboxId: string, params: Record<string, string>, opts?: { signal?: AbortSignal }) =>

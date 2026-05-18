@@ -20,6 +20,12 @@ import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
 import type { Env } from "./types";
 import { requireMailbox, type MailboxContext } from "./lib/mailbox";
+import {
+	deletePushSubscription,
+	getPushConfig,
+	savePushSubscription,
+	sendMailboxPushNotification,
+} from "./lib/push-notifications";
 
 type AppContext = Context<MailboxContext>;
 
@@ -40,6 +46,23 @@ const DraftBody = z.object({
 	in_reply_to: z.string().optional(),
 	thread_id: z.string().optional(),
 	draft_id: z.string().optional(),
+});
+
+const PushSubscriptionBody = z.object({
+	endpoint: z.string().url().max(2048),
+	expirationTime: z.number().nullable().optional(),
+	keys: z.object({
+		p256dh: z.string().min(1),
+		auth: z.string().min(1),
+	}),
+});
+
+const SavePushSubscriptionBody = z.object({
+	subscription: PushSubscriptionBody,
+});
+
+const DeletePushSubscriptionBody = z.object({
+	endpoint: z.string().url().max(2048),
 });
 
 // -- Helpers --------------------------------------------------------
@@ -92,6 +115,8 @@ app.get("/api/v1/config", (c) => {
 	return c.json({ domains, emailAddresses });
 });
 
+app.get("/api/v1/push/config", (c) => c.json(getPushConfig(c.env)));
+
 // -- Mailboxes ------------------------------------------------------
 
 app.get("/api/v1/mailboxes", async (c) => {
@@ -138,6 +163,48 @@ app.delete("/api/v1/mailboxes/:mailboxId", async (c) => {
 	if (!(await c.env.BUCKET.head(key))) return c.json({ error: "Not found" }, 404);
 	await c.env.BUCKET.delete(key); // TODO: also delete DO data and R2 attachment blobs
 	return c.body(null, 204);
+});
+
+// -- Push notifications ---------------------------------------------
+
+app.post("/api/v1/mailboxes/:mailboxId/push-subscriptions", async (c: AppContext) => {
+	const config = getPushConfig(c.env);
+	if (!config.enabled) return c.json({ error: "Push notifications are not configured" }, 503);
+	const mailboxId = c.req.param("mailboxId")!;
+	const { subscription } = SavePushSubscriptionBody.parse(await c.req.json());
+	const result = await savePushSubscription(c.env, mailboxId, subscription, {
+		userAgent: c.req.header("user-agent") || undefined,
+		origin: c.req.header("origin") || new URL(c.req.url).origin,
+	});
+	return c.json({ status: "subscribed", ...result }, 201);
+});
+
+app.delete("/api/v1/mailboxes/:mailboxId/push-subscriptions", async (c: AppContext) => {
+	const mailboxId = c.req.param("mailboxId")!;
+	const { endpoint } = DeletePushSubscriptionBody.parse(await c.req.json());
+	const result = await deletePushSubscription(c.env, mailboxId, endpoint);
+	return c.json({ status: "unsubscribed", ...result });
+});
+
+app.post("/api/v1/mailboxes/:mailboxId/push-test", async (c: AppContext) => {
+	const mailboxId = c.req.param("mailboxId")!;
+	const result = await sendMailboxPushNotification(c.env, {
+		mailboxId,
+		emailId: `test-${crypto.randomUUID()}`,
+		sender: "Agentic Inbox",
+		subject: "Notifications are ready",
+		url: `/mailbox/${encodeURIComponent(mailboxId)}/emails/inbox`,
+	});
+	if (result.skipped === "not_configured") {
+		return c.json({ error: "Push notifications are not configured" }, 503);
+	}
+	if (result.skipped === "no_subscriptions") {
+		return c.json({ error: "No push subscriptions found for this mailbox" }, 404);
+	}
+	if (result.sent === 0) {
+		return c.json({ error: "No notifications could be delivered", result }, 502);
+	}
+	return c.json({ status: "sent", ...result });
 });
 
 // -- Emails ---------------------------------------------------------
@@ -403,6 +470,13 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 	}, attachmentData);
 
 	const agentStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(mailboxId));
+	ctx.waitUntil(sendMailboxPushNotification(env, {
+		mailboxId,
+		emailId: messageId,
+		sender: (parsedEmail.from?.address || "").toLowerCase(),
+		subject: parsedEmail.subject || "",
+		url: `/mailbox/${encodeURIComponent(mailboxId)}/emails/inbox`,
+	}).catch((e) => console.error("Push notification failed:", (e as Error).message)));
 	ctx.waitUntil(agentStub.fetch(new Request("https://agents/onNewEmail", {
 		method: "POST", headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({ mailboxId, emailId: messageId, sender: (parsedEmail.from?.address || "").toLowerCase(), subject: parsedEmail.subject || "", threadId }),
