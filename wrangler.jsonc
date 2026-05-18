@@ -14,7 +14,7 @@
 		// TEAM_DOMAIN may be the base Access URL or the full /cdn-cgi/access/certs URL.
 		// The worker now fails closed outside local development if Access is not configured.
 		"DOMAINS": "example.com",
-		"EMAIL_ADDRESSES": []
+		"EMAIL_ADDRESSES": "posttrig.com,supportfa.st,adityab.in"
 	},
 	"send_email": [
 		{
